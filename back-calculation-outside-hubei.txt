@@ -1,0 +1,197 @@
+ 
+Gam.star<-function(a, b, c, gam)
+{  gv = 0
+   if(gam[1]> 1/150 & gam[2]> 1e-3  & b>a & c>a)
+   {
+       coef = gamma(1/gam[1])/(gam[1]*gam[2])
+       gv1 = pgamma( gam[2]*(c-a)^gam[1], 1/gam[1])
+      
+       gv2 = 0
+       if(c>b){  gv2 =  pgamma( gam[2]*(c-b)^gam[1], 1/gam[1]) }
+       gv = coef*(gv1-gv2)
+   }
+   gv
+}
+
+beta.fun<-function(alpha, wt){ alpha^2 / sum(alpha^2*wt) }
+
+p.cal<-function(theta, time, time.c)
+{
+    k    = length(time)-1
+    m    = length(time.c)-1   ####   length of beta
+
+    alpha =  theta[1:m]
+    beta  = beta.fun(alpha, diff(time.c) )
+
+    gam =  theta[-c(1:m)]^2
+    pp    =  rep(0, k) 
+    for(j in 1:k){
+       tmp = 1e-20
+       for(i in 1:m)
+       {  t1 = min(time[j+1], time.c[i+1])
+          s1 = Gam.star(time.c[i], t1, time[j+1], gam)
+          u1= t1 - time.c[i] - s1
+
+          t2 = min(time[j], time.c[i+1])
+          s2 = Gam.star(time.c[i], t2, time[j], gam) 
+          u2 = t2- time.c[i] - s2 
+           
+          u3 = max(u1,0)  - (time[j]>time.c[i])*max(u2, 0)  
+          tmp = tmp + max(u3, 0)*(time[j+1]>time.c[i])*beta[i] 
+        }
+       pp[j] = tmp      
+    }
+   pp
+}
+
+maxlike.N<-function(n, p0)
+{
+   obj<-function(n.big)
+   {  if( p0<= 1e-4 ){ 
+          out=sum( log((n.big-n+1):n.big)) + (n.big-n)*log(1e-4)
+      }else{
+          out = sum( log((n.big-n+1):n.big)) + (n.big-n)*log(p0)
+       }
+      -out
+    }
+  optimize(obj, c(n, 100*n))
+}
+
+
+
+maxlike <- function(x, time, time.c)
+{  
+   k = length(x)
+   m = length(time.c) - 1   ###  length of beta
+   n = sum(x)
+
+   eps = 1e-8
+   obj <-function(theta)
+   {   p    = p.cal(theta, time, time.c)
+       p0   = 1-sum(p)
+       tmp = sum(x*log(eps))
+       if( min(p)> eps ){ tmp =   sum(x*log(p)) }
+       maxlike.N(n, p0)$objective  -  tmp 
+    }
+
+    theta0 =c(rep(1, m),1, 1) 
+    theta = nlminb(theta0, obj, control=list(eval.max=500))$par
+ 
+    alpha = theta[1:m]
+    beta  = beta.fun(alpha, diff(time.c))
+    gamma = theta[-(1:m)]^2
+
+    pp = p.cal(theta, time, time.c)
+    p0 = 1-sum(pp)
+    n.big = round( maxlike.N(n, p0)$minimum )
+
+    list(N.hat= n.big, Xproj=n.big-n, 
+               gamma.hat=gamma, beta.hat=beta,  
+               XvEx =cbind(x, round(n.big*pp)) )  
+}
+
+
+var.est.bootstrap <- function(N.hat, p.hat, time, time.c,  nboot=1000)
+{   kk = length(p.hat)-1
+    para = NULL
+    for( i in 1:nboot)
+    {   x.boot = rmultinom(1, N.hat,p.hat)
+        out.boot=maxlike(x.boot[1:kk], time, time.c)
+        tmp = c(out.boot$N.hat/N.hat, out.boot$gamma.hat, out.boot$beta.hat)
+        cat('Bootrap No.', i,  tmp, '\n')
+        para = rbind(para, tmp)
+     }
+    N.hat*var(para)
+}
+
+
+
+#############################################################################################
+#############################################################################################
+###############           Results   for outside Hubei      ################################## #############################################################################################
+start.time = proc.time()
+
+data=read.table('d:/coro-china.txt', head=T)
+####   data[, 1]:   date
+####   data[, 2]:   daily increase of confirmed cases in mainland China
+####   data[, 3]:   daily increase of confirmed cases in Hubei 
+
+x  = data[,2]-data[,3]    #  daily increase of confirmed cases outside Hubei 
+add =  20                 #  There are 20 days between Jan 1  and Jan 20. 
+step = 7
+
+
+k   = length(x)
+m   = round(k /step)   
+time  = c(0,  add-1 + c(1:k))
+time.c= c(0,  add,  add+ step*(1:(m-1)), max(time))
+
+####  Here k is the length  of x;  time[2:(k+1)] must be the time points
+####  at which  x records the number of newly confirmed cases. 
+####  Therefore the length of ``time'' must be k+1. 
+
+out = maxlike(x, time, time.c)
+out
+
+N.hat = out$N.hat
+p.hat = c(out$XvEx[,1], out$Xproj)/N.hat
+V.est =var.est.bootstrap(N.hat, p.hat, time, time.c, nboot=200)
+
+end.time = proc.time()
+end.time - start.time 
+ 
+
+
+
+#####################################################################################
+##############   boostrap variance estimate
+
+
+> V.est
+               [,1]          [,2]          [,3]          [,4]          [,5]          [,6]          [,7]          [,8]          [,9]         [,10]         [,11]         [,12]
+ [1,]  1.714160e-02 -1.959381e-03 -8.860129e-03  7.290560e-06  1.937630e-03 -1.641271e-03 -2.005332e-03 -5.602553e-04 -7.520509e-12 -2.159571e-05 -4.425473e-04  3.164631e-03
+ [2,] -1.959381e-03  2.084607e-01  2.718318e-02 -2.101522e-05  1.157644e-02 -3.218585e-02  1.451751e-02  4.488232e-03  4.794623e-11  1.738000e-03 -1.259376e-04  6.026306e-05
+ [3,] -8.860129e-03  2.718318e-02  4.531489e-01 -1.499050e-04 -9.694851e-02 -1.037836e-02  7.914210e-02  2.625391e-02  7.965544e-11  1.427056e-03  1.881766e-03 -1.107933e-03
+ [4,]  7.290560e-06 -2.101522e-05 -1.499050e-04  1.540978e-06  3.419413e-05 -4.720953e-06 -3.139826e-05 -1.185645e-06 -2.572696e-13  1.003241e-06 -4.931603e-06  3.075678e-06
+ [5,]  1.937630e-03  1.157644e-02 -9.694851e-02  3.419413e-05  3.081534e-02 -8.929216e-03 -1.669514e-02 -4.873812e-03 -2.549938e-11 -2.402901e-04 -4.809016e-04  3.573829e-04
+ [6,] -1.641271e-03 -3.218585e-02 -1.037836e-02 -4.720953e-06 -8.929216e-03  2.199427e-02 -1.168600e-02 -6.117395e-04  1.529588e-13 -3.789718e-04  2.285057e-04 -7.039159e-04
+ [7,] -2.005332e-03  1.451751e-02  7.914210e-02 -3.139826e-05 -1.669514e-02 -1.168600e-02  2.570618e-02  2.262288e-03  1.875543e-11  4.929375e-04  1.150042e-04 -1.231511e-04
+ [8,] -5.602553e-04  4.488232e-03  2.625391e-02 -1.185645e-06 -4.873812e-03 -6.117395e-04  2.262288e-03  3.187765e-03  8.033714e-12  1.858617e-05  1.048537e-04 -9.864655e-05
+ [9,] -7.520509e-12  4.794623e-11  7.965544e-11 -2.572696e-13 -2.549938e-11  1.529588e-13  1.875543e-11  8.033714e-12  1.489289e-18  1.853605e-13  7.983768e-13 -1.973299e-12
+[10,] -2.159571e-05  1.738000e-03  1.427056e-03  1.003241e-06 -2.402901e-04 -3.789718e-04  4.929375e-04  1.858617e-05  1.853605e-13  1.931955e-04 -1.317721e-04  5.068990e-05
+[11,] -4.425473e-04 -1.259376e-04  1.881766e-03 -4.931603e-06 -4.809016e-04  2.285057e-04  1.150042e-04  1.048537e-04  7.983768e-13 -1.317721e-04  4.125470e-04 -2.731709e-04
+[12,]  3.164631e-03  6.026306e-05 -1.107933e-03  3.075678e-06  3.573829e-04 -7.039159e-04 -1.231511e-04 -9.864655e-05 -1.973299e-12  5.068990e-05 -2.731709e-04  9.123614e-04
+
+
+> diag(V.est)
+ [1] 1.714160e-02 2.084607e-01 4.531489e-01 1.540978e-06 3.081534e-02 2.199427e-02 2.570618e-02 3.187765e-03 1.489289e-18 1.931955e-04 4.125470e-04 9.123614e-04
+> sig=diag(V.est)
+> N.hat
+[1] 13130
+> dn = 1.96*sqrt(sig[1]*N.hat)
+> c(N.hat-dn, N.hat+dn)
+[1] 13100.6 13159.4
+> out$gamma.hat
+[1] 1.0288051 0.1853595
+ 
+> dg = 1.96*sqrt(sig[2:3])/sqrt(N.hat)
+> out$gamma.hat-dg
+[1] 1.020995 0.173845
+> out$gamma.hat+dg
+[1] 1.036615 0.196874
+
+1/gamma2
+
+5.059784,  5.730058
+
+
+> db = 1.96*sqrt(sig[-c(1:3)])/sqrt(N.hat)
+> out$beta.hat-db
+[1]  4.411077e-06  4.730652e-02  7.089433e-02  1.466589e-02 -9.657548e-04 -2.017100e-11 -1.702402e-04  4.448860e-04  3.879857e-04
+> out$beta.hat+db
+[1] 4.687811e-05 5.331185e-02 7.596784e-02 2.015084e-02 9.657548e-04 2.157772e-11 3.052617e-04 1.139735e-03 1.421311e-03
+
+
+
+
+
